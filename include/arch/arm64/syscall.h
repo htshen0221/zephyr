@@ -26,8 +26,7 @@
 
 #include <zephyr/types.h>
 #include <stdbool.h>
-#include <arch/arm64/lib_helpers.h>
-#include <arch/arm64/tpidrro_el0.h>
+#include <arch/arm64/cpu.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -166,7 +165,11 @@ static inline uintptr_t arch_syscall_invoke0(uintptr_t call_id)
 
 static inline bool arch_is_user_context(void)
 {
-	return (read_tpidrro_el0() & TPIDRROEL0_IN_EL0) != 0;
+	uint64_t tpidrro_el0;
+
+	__asm__ volatile("mrs %0, tpidrro_el0" : "=r" (tpidrro_el0));
+
+	return (tpidrro_el0 != 0x0);
 }
 
 #ifdef __cplusplus

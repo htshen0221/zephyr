@@ -29,7 +29,6 @@ NET_BUF_POOL_FIXED_DEFINE(data_pool, CHANNELS, DATA_BUF_SIZE, NULL);
 static struct channel {
 	uint8_t chan_id; /* Internal number that identifies L2CAP channel. */
 	struct bt_l2cap_le_chan le;
-	bool in_use;
 } channels[CHANNELS];
 
 /* TODO Extend to support multiple servers */
@@ -129,14 +128,12 @@ static struct channel *get_free_channel()
 	struct channel *chan;
 
 	for (i = 0U; i < CHANNELS; i++) {
-		if (channels[i].in_use) {
+		if (channels[i].le.chan.state != BT_L2CAP_DISCONNECTED) {
 			continue;
 		}
 
 		chan = &channels[i];
 		chan->chan_id = i;
-
-		channels[i].in_use = true;
 
 		return chan;
 	}
@@ -144,20 +141,17 @@ static struct channel *get_free_channel()
 	return NULL;
 }
 
-
 static void connect(uint8_t *data, uint16_t len)
 {
 	const struct l2cap_connect_cmd *cmd = (void *) data;
 	struct l2cap_connect_rp *rp;
 	struct bt_conn *conn;
-	struct channel *chan = NULL;
-	struct bt_l2cap_chan *allocated_channels[5] = {};
+	struct channel *chan;
 	uint16_t mtu = sys_le16_to_cpu(cmd->mtu);
-	uint8_t buf[sizeof(*rp) + CHANNELS];
-	uint8_t i = 0;
+	uint8_t buf[sizeof(*rp) + 1];
 	int err;
 
-	if (cmd->num > CHANNELS || mtu > DATA_MTU) {
+	if (cmd->num > 1 || mtu > DATA_MTU) {
 		goto fail;
 	}
 
@@ -166,49 +160,29 @@ static void connect(uint8_t *data, uint16_t len)
 		goto fail;
 	}
 
-	rp = (void *)buf;
-
-	for (i = 0U; i < cmd->num; i++) {
-		chan = get_free_channel();
-		if (!chan) {
-			goto fail;
-		}
-		chan->le.chan.ops = &l2cap_ops;
-		chan->le.rx.mtu = mtu;
-		rp->chan_id[i] = chan->chan_id;
-		allocated_channels[i] = &chan->le.chan;
-	}
-
-	if (cmd->num == 1) {
-		err = bt_l2cap_chan_connect(conn, &chan->le.chan, cmd->psm);
-		if (err < 0) {
-			goto fail;
-		}
-	} else if (cmd->num > 1) {
-#if defined(CONFIG_BT_L2CAP_ECRED)
-		err = bt_l2cap_ecred_chan_connect(conn, allocated_channels,
-							cmd->psm);
-		if (err < 0) {
-			goto fail;
-		}
-#endif
-	} else {
-		LOG_ERR("Invalid 'num' parameter value");
+	chan = get_free_channel();
+	if (!chan) {
 		goto fail;
 	}
 
-	rp->num = cmd->num;
+	chan->le.chan.ops = &l2cap_ops;
+	chan->le.rx.mtu = mtu;
+
+	err = bt_l2cap_chan_connect(conn, &chan->le.chan, cmd->psm);
+	if (err < 0) {
+		goto fail;
+	}
+
+	rp = (void *)buf;
+	rp->num = 1U;
+	rp->chan_id[0] = chan->chan_id;
 
 	tester_send(BTP_SERVICE_ID_L2CAP, L2CAP_CONNECT, CONTROLLER_INDEX,
-		    (uint8_t *)rp, sizeof(*rp) + rp->num);
+		    (uint8_t *)rp, sizeof(buf));
 
 	return;
 
 fail:
-	while (i >= 0) {
-		channels[i].in_use = false;
-		i--;
-	}
 	tester_rsp(BTP_SERVICE_ID_L2CAP, L2CAP_CONNECT, CONTROLLER_INDEX,
 		   BTP_STATUS_FAILED);
 }

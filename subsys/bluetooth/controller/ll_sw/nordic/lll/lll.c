@@ -65,7 +65,11 @@ static int init_reset(void);
 #if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
 static inline void done_inc(void);
 #endif /* CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
-static int resume_enqueue(lll_prepare_cb_t resume_cb);
+static int prepare(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
+		   lll_prepare_cb_t prepare_cb, int prio,
+		   struct lll_prepare_param *prepare_param,
+		   uint8_t is_resume, uint8_t is_dequeue);
+static int resume_enqueue(lll_prepare_cb_t resume_cb, int resume_prio);
 static void isr_race(void *param);
 
 #if !defined(CONFIG_BT_CTLR_LOW_LAT)
@@ -73,7 +77,7 @@ static void ticker_stop_op_cb(uint32_t status, void *param);
 static void ticker_start_op_cb(uint32_t status, void *param);
 static void preempt_ticker_start(struct lll_prepare_param *prepare_param);
 static void preempt_ticker_cb(uint32_t ticks_at_expire, uint32_t remainder,
-			      uint16_t lazy, uint8_t force, void *param);
+			      uint16_t lazy, void *param);
 static void preempt(void *param);
 #else /* CONFIG_BT_CTLR_LOW_LAT */
 #if (CONFIG_BT_CTLR_LLL_PRIO == CONFIG_BT_CTLR_ULL_LOW_PRIO)
@@ -242,6 +246,25 @@ int lll_reset(void)
 	return 0;
 }
 
+int lll_prepare(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
+		lll_prepare_cb_t prepare_cb, int prio,
+		struct lll_prepare_param *prepare_param)
+{
+	return prepare(is_abort_cb, abort_cb, prepare_cb, prio, prepare_param,
+		       0, 0);
+}
+
+void lll_resume(void *param)
+{
+	struct lll_event *next;
+	int ret;
+
+	next = param;
+	ret = prepare(next->is_abort_cb, next->abort_cb, next->prepare_cb,
+		      next->prio, &next->prepare_param, next->is_resume, 1);
+	LL_ASSERT(!ret || ret == -EINPROGRESS);
+}
+
 void lll_disable(void *param)
 {
 	/* LLL disable of current event, done is generated */
@@ -344,10 +367,6 @@ int lll_done(void *param)
 	ull_prepare_dequeue(TICKER_USER_ID_LLL);
 #endif /* !CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
 
-#if defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
-	lll_done_score(param, 0, 0); /* TODO */
-#endif /* CONFIG_BT_CTLR_JIT_SCHEDULING */
-
 	/* Let ULL know about LLL event done */
 	evdone = ull_event_done(ull);
 	LL_ASSERT(evdone);
@@ -368,7 +387,8 @@ bool lll_is_done(void *param)
 	return !event.curr.abort_cb;
 }
 
-int lll_is_abort_cb(void *next, void *curr, lll_prepare_cb_t *resume_cb)
+int lll_is_abort_cb(void *next, int prio, void *curr,
+			 lll_prepare_cb_t *resume_cb, int *resume_prio)
 {
 	return -ECANCELED;
 }
@@ -598,10 +618,10 @@ static inline bool is_done_sync(void)
 #endif /* !CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
 }
 
-int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
-			lll_prepare_cb_t prepare_cb,
-			struct lll_prepare_param *prepare_param,
-			uint8_t is_resume, uint8_t is_dequeue)
+static int prepare(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
+		   lll_prepare_cb_t prepare_cb, int prio,
+		   struct lll_prepare_param *prepare_param,
+		   uint8_t is_resume, uint8_t is_dequeue)
 {
 	struct lll_event *p;
 	uint8_t idx;
@@ -621,6 +641,7 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 #if defined(CONFIG_BT_CTLR_LOW_LAT)
 		lll_prepare_cb_t resume_cb;
 		struct lll_event *next;
+		int resume_prio;
 #endif /* CONFIG_BT_CTLR_LOW_LAT */
 
 		if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) && event.curr.param) {
@@ -630,7 +651,7 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 
 		/* Store the next prepare for deferred call */
 		err = ull_prepare_enqueue(is_abort_cb, abort_cb, prepare_param,
-					  prepare_cb, is_resume);
+					  prepare_cb, prio, is_resume);
 		LL_ASSERT(!err);
 
 #if !defined(CONFIG_BT_CTLR_LOW_LAT)
@@ -659,12 +680,12 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 
 		if (next) {
 			/* check if resume requested by curr */
-			err = event.curr.is_abort_cb(NULL, event.curr.param,
-						     &resume_cb);
+			err = event.curr.is_abort_cb(NULL, 0, event.curr.param,
+						     &resume_cb, &resume_prio);
 			LL_ASSERT(err);
 
 			if (err == -EAGAIN) {
-				err = resume_enqueue(resume_cb);
+				err = resume_enqueue(resume_cb, resume_prio);
 				LL_ASSERT(!err);
 			} else {
 				LL_ASSERT(err == -ECANCELED);
@@ -697,15 +718,15 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 	return err;
 }
 
-static int resume_enqueue(lll_prepare_cb_t resume_cb)
+static int resume_enqueue(lll_prepare_cb_t resume_cb, int resume_prio)
 {
-	struct lll_prepare_param prepare_param = {0};
+	struct lll_prepare_param prepare_param;
 
 	prepare_param.param = event.curr.param;
 	event.curr.param = NULL;
 
 	return ull_prepare_enqueue(event.curr.is_abort_cb, event.curr.abort_cb,
-				   &prepare_param, resume_cb, 1);
+				   &prepare_param, resume_cb, resume_prio, 1);
 }
 
 static void isr_race(void *param)
@@ -769,7 +790,7 @@ static void preempt_ticker_start(struct lll_prepare_param *prepare_param)
 }
 
 static void preempt_ticker_cb(uint32_t ticks_at_expire, uint32_t remainder,
-			       uint16_t lazy, uint8_t force, void *param)
+			       uint16_t lazy, void *param)
 {
 	static memq_link_t link;
 	static struct mayfly mfy = {0, 0, &link, NULL, preempt};
@@ -784,6 +805,7 @@ static void preempt(void *param)
 {
 	lll_prepare_cb_t resume_cb;
 	struct lll_event *next;
+	int resume_prio;
 	uint8_t idx;
 	int ret;
 
@@ -805,9 +827,9 @@ static void preempt(void *param)
 		return;
 	}
 
-	ret = event.curr.is_abort_cb(next->prepare_param.param,
+	ret = event.curr.is_abort_cb(next->prepare_param.param, next->prio,
 				     event.curr.param,
-				     &resume_cb);
+				     &resume_cb, &resume_prio);
 	if (!ret) {
 		/* Let LLL know about the cancelled prepare */
 		next->is_aborted = 1;
@@ -843,7 +865,7 @@ static void preempt(void *param)
 			iter = ull_prepare_dequeue_iter(&iter_idx);
 		}
 
-		ret = resume_enqueue(resume_cb);
+		ret = resume_enqueue(resume_cb, resume_prio);
 		LL_ASSERT(!ret);
 	} else {
 		LL_ASSERT(ret == -ECANCELED);

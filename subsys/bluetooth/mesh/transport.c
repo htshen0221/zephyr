@@ -632,12 +632,12 @@ int bt_mesh_trans_send(struct bt_mesh_net_tx *tx, struct net_buf_simple *msg,
 		return -EINVAL;
 	}
 
-	if (msg->len > BT_MESH_TX_SDU_MAX - BT_MESH_MIC_SHORT) {
-		BT_ERR("Message too big: %u", msg->len);
+	if (msg->len > BT_MESH_TX_SDU_MAX) {
+		BT_ERR("Not enough segment buffers for length %u", msg->len);
 		return -EMSGSIZE;
 	}
 
-	if (net_buf_simple_tailroom(msg) < BT_MESH_MIC_SHORT) {
+	if (net_buf_simple_tailroom(msg) < 4) {
 		BT_ERR("Insufficient tailroom for Transport MIC");
 		return -EINVAL;
 	}
@@ -1576,8 +1576,20 @@ int bt_mesh_trans_recv(struct net_buf_simple *buf, struct bt_mesh_net_rx *rx)
 		err = trans_unseg(buf, rx, &seq_auth);
 	}
 
-	/* Notify LPN state machine so a Friend Poll will be sent. */
-	if (IS_ENABLED(CONFIG_BT_MESH_LOW_POWER)) {
+	/* Notify LPN state machine so a Friend Poll will be sent. If the
+	 * message was a Friend Update it's possible that a Poll was already
+	 * queued for sending, however that's fine since then the
+	 * bt_mesh_lpn_waiting_update() function will return false:
+	 * we still need to go through the actual sending to the bearer and
+	 * wait for ReceiveDelay before transitioning to WAIT_UPDATE state.
+	 * Another situation where we want to notify the LPN state machine
+	 * is if it's configured to use an automatic Friendship establishment
+	 * timer, in which case we want to reset the timer at this point.
+	 *
+	 */
+	if (IS_ENABLED(CONFIG_BT_MESH_LOW_POWER) &&
+	    (bt_mesh_lpn_timer() ||
+	     (bt_mesh_lpn_established() && bt_mesh_lpn_waiting_update()))) {
 		bt_mesh_lpn_msg_received(rx);
 	}
 

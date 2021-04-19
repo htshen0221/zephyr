@@ -2680,6 +2680,10 @@ int bt_conn_auth_pairing_confirm(struct bt_conn *conn)
 }
 #endif /* CONFIG_BT_SMP || CONFIG_BT_BREDR */
 
+struct bt_conn *index_get_conn(int index){
+	return &acl_conns[index];
+}
+
 uint8_t bt_conn_index(struct bt_conn *conn)
 {
 	ptrdiff_t index;

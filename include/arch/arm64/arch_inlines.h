@@ -10,12 +10,21 @@
 #ifndef _ASMLANGUAGE
 
 #include <kernel_structs.h>
+#include <arch/cpu.h>
 #include <arch/arm64/lib_helpers.h>
-#include <arch/arm64/tpidrro_el0.h>
 
 static ALWAYS_INLINE _cpu_t *arch_curr_cpu(void)
 {
-	return (_cpu_t *)(read_tpidrro_el0() & TPIDRROEL0_CURR_CPU);
+#ifdef CONFIG_SMP
+	uint64_t core;
+
+	/* Note: Only support one Cluster */
+	core = MPIDR_TO_CORE(GET_MPIDR());
+
+	return &_kernel.cpus[core];
+#else
+	return &_kernel.cpus[0];
+#endif /* CONFIG_SMP */
 }
 
 #endif /* !_ASMLANGUAGE */

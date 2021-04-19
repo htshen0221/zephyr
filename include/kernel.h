@@ -528,7 +528,7 @@ __syscall void k_wakeup(k_tid_t thread);
  * @return ID of current thread.
  *
  */
-__syscall k_tid_t k_current_get(void) __attribute_const__;
+__syscall k_tid_t k_current_get(void);
 
 /**
  * @brief Abort a thread.
@@ -2852,8 +2852,7 @@ struct k_work_sync;
  */
 
 /**
- * @defgroup workqueue_apis Work Queue APIs
- * @ingroup kernel_apis
+ * @addtogroup thread_apis
  * @{
  */
 
@@ -3769,7 +3768,7 @@ static inline k_ticks_t k_delayed_work_remaining_ticks(
 struct k_work_user;
 
 /**
- * @addtogroup workqueue_apis
+ * @addtogroup thread_apis
  * @{
  */
 
@@ -3953,7 +3952,7 @@ struct k_work_poll {
  */
 
 /**
- * @addtogroup workqueue_apis
+ * @addtogroup thread_apis
  * @{
  */
 
@@ -4126,8 +4125,6 @@ struct k_msgq {
 	/** Number of used messages */
 	uint32_t used_msgs;
 
-	_POLL_EVENT;
-
 	_OBJECT_TRACING_NEXT_PTR(k_msgq)
 	_OBJECT_TRACING_LINKED_FLAG
 
@@ -4149,7 +4146,6 @@ struct k_msgq {
 	.read_ptr = q_buffer, \
 	.write_ptr = q_buffer, \
 	.used_msgs = 0, \
-	_POLL_EVENT_OBJ_INIT(obj) \
 	_OBJECT_TRACING_INIT \
 	}
 
@@ -4728,7 +4724,6 @@ __syscall size_t k_pipe_write_avail(struct k_pipe *pipe);
 
 struct k_mem_slab {
 	_wait_q_t wait_q;
-	struct k_spinlock lock;
 	uint32_t num_blocks;
 	size_t block_size;
 	char *buffer;
@@ -4745,7 +4740,6 @@ struct k_mem_slab {
 #define Z_MEM_SLAB_INITIALIZER(obj, slab_buffer, slab_block_size, \
 			       slab_num_blocks) \
 	{ \
-	.lock = {}, \
 	.wait_q = Z_WAIT_Q_INIT(&obj.wait_q), \
 	.num_blocks = slab_num_blocks, \
 	.block_size = slab_block_size, \
@@ -5101,9 +5095,6 @@ enum _poll_types_bits {
 	/* queue/FIFO/LIFO data availability */
 	_POLL_TYPE_DATA_AVAILABLE,
 
-	/* msgq data availability */
-	_POLL_TYPE_MSGQ_DATA_AVAILABLE,
-
 	_POLL_NUM_TYPES
 };
 
@@ -5125,9 +5116,6 @@ enum _poll_states_bits {
 
 	/* queue/FIFO/LIFO wait was cancelled */
 	_POLL_STATE_CANCELLED,
-
-	/* data is available to read on a message queue */
-	_POLL_STATE_MSGQ_DATA_AVAILABLE,
 
 	_POLL_NUM_STATES
 };
@@ -5159,7 +5147,6 @@ enum _poll_states_bits {
 #define K_POLL_TYPE_SEM_AVAILABLE Z_POLL_TYPE_BIT(_POLL_TYPE_SEM_AVAILABLE)
 #define K_POLL_TYPE_DATA_AVAILABLE Z_POLL_TYPE_BIT(_POLL_TYPE_DATA_AVAILABLE)
 #define K_POLL_TYPE_FIFO_DATA_AVAILABLE K_POLL_TYPE_DATA_AVAILABLE
-#define K_POLL_TYPE_MSGQ_DATA_AVAILABLE Z_POLL_TYPE_BIT(_POLL_TYPE_MSGQ_DATA_AVAILABLE)
 
 /* public - polling modes */
 enum k_poll_modes {
@@ -5175,7 +5162,6 @@ enum k_poll_modes {
 #define K_POLL_STATE_SEM_AVAILABLE Z_POLL_STATE_BIT(_POLL_STATE_SEM_AVAILABLE)
 #define K_POLL_STATE_DATA_AVAILABLE Z_POLL_STATE_BIT(_POLL_STATE_DATA_AVAILABLE)
 #define K_POLL_STATE_FIFO_DATA_AVAILABLE K_POLL_STATE_DATA_AVAILABLE
-#define K_POLL_STATE_MSGQ_DATA_AVAILABLE Z_POLL_STATE_BIT(_POLL_STATE_MSGQ_DATA_AVAILABLE)
 #define K_POLL_STATE_CANCELLED Z_POLL_STATE_BIT(_POLL_STATE_CANCELLED)
 
 /* public - poll signal object */
@@ -5232,7 +5218,6 @@ struct k_poll_event {
 		struct k_sem *sem;
 		struct k_fifo *fifo;
 		struct k_queue *queue;
-		struct k_msgq *msgq;
 	};
 };
 

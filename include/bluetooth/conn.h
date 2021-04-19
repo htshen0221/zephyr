@@ -257,6 +257,8 @@ const bt_addr_le_t *bt_conn_get_dst(const struct bt_conn *conn);
  */
 uint8_t bt_conn_index(struct bt_conn *conn);
 
+struct bt_conn *index_get_conn(int index);
+
 /** Connection Type */
 enum {
 	/** LE Connection Type */

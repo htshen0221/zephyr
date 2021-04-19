@@ -506,8 +506,7 @@ static int engine_add_observer(struct lwm2m_message *msg,
 	observe_node_data[i].event_timestamp =
 			observe_node_data[i].last_timestamp;
 	observe_node_data[i].min_period_sec = attrs.pmin;
-	observe_node_data[i].max_period_sec = (attrs.pmax > 0) ? MAX(attrs.pmax, attrs.pmin)
-							       : attrs.pmax;
+	observe_node_data[i].max_period_sec = MAX(attrs.pmax, attrs.pmin);
 	observe_node_data[i].format = format;
 	observe_node_data[i].counter = OBSERVE_COUNTER_START;
 	sys_slist_append(&engine_observer_list,
@@ -1053,16 +1052,15 @@ int lwm2m_send_message(struct lwm2m_message *msg)
 	}
 
 	if (msg->type == COAP_TYPE_CON) {
-		int32_t remaining =
-			k_ticks_to_ms_ceil32(k_work_delayable_remaining_get(
-				&msg->ctx->retransmit_work));
+		int32_t remaining = k_delayed_work_remaining_get(
+					&msg->ctx->retransmit_work);
 
 		/* If the item is already pending and its timeout is smaller
 		 * than the new one, skip the submission.
 		 */
 		if (remaining == 0 || remaining > msg->pending->timeout) {
-			k_work_reschedule(&msg->ctx->retransmit_work,
-					  K_MSEC(msg->pending->timeout));
+			k_delayed_work_submit(&msg->ctx->retransmit_work,
+					      K_MSEC(msg->pending->timeout));
 		}
 	} else {
 		lwm2m_reset_message(msg, true);
@@ -4252,7 +4250,7 @@ next:
 		remaining = 0;
 	}
 
-	k_work_reschedule(&client_ctx->retransmit_work, K_MSEC(remaining));
+	k_delayed_work_submit(&client_ctx->retransmit_work, K_MSEC(remaining));
 }
 
 static int notify_message_reply_cb(const struct coap_packet *response,
@@ -4454,23 +4452,19 @@ static int lwm2m_engine_service(void)
 		/*
 		 * manual notify requirements:
 		 * - event_timestamp > last_timestamp
-		 * - if min_period_sec is set:
-		 *   current timestamp > last_timestamp + min_period_sec
+		 * - current timestamp > last_timestamp + min_period_sec
 		 */
 		if (obs->event_timestamp > obs->last_timestamp &&
-		    (obs->min_period_sec == 0 ||
-		     timestamp > obs->last_timestamp +
-				MSEC_PER_SEC * obs->min_period_sec)) {
+		    timestamp > obs->last_timestamp +
+				MSEC_PER_SEC * obs->min_period_sec) {
 			obs->last_timestamp = k_uptime_get();
 			generate_notify_message(obs, true);
 
 		/*
 		 * automatic time-based notify requirements:
-		 * - if max_period_sec is set:
-		 *   current timestamp > last_timestamp + max_period_sec
+		 * - current timestamp > last_timestamp + max_period_sec
 		 */
-		} else if (obs->max_period_sec > 0 &&
-			   timestamp > obs->last_timestamp +
+		} else if (timestamp > obs->last_timestamp +
 				MSEC_PER_SEC * obs->max_period_sec) {
 			obs->last_timestamp = k_uptime_get();
 			generate_notify_message(obs, false);
@@ -4502,7 +4496,7 @@ int lwm2m_engine_context_close(struct lwm2m_ctx *client_ctx)
 	size_t i;
 
 	/* Cancel pending retransmit work */
-	k_work_cancel_delayable(&client_ctx->retransmit_work);
+	k_delayed_work_cancel(&client_ctx->retransmit_work);
 
 	/* Remove observes for this context */
 	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&engine_observer_list,
@@ -4538,7 +4532,7 @@ int lwm2m_engine_context_close(struct lwm2m_ctx *client_ctx)
 
 void lwm2m_engine_context_init(struct lwm2m_ctx *client_ctx)
 {
-	k_work_init_delayable(&client_ctx->retransmit_work, retransmit_request);
+	k_delayed_work_init(&client_ctx->retransmit_work, retransmit_request);
 	sys_mutex_init(&client_ctx->send_lock);
 }
 

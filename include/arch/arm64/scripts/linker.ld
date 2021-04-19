@@ -50,16 +50,9 @@
 
 #if defined(CONFIG_ARM_MMU)
   _region_min_align = CONFIG_MMU_PAGE_SIZE;
-#elif defined(CONFIG_ARM_MPU)
-  _region_min_align = CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE;
-  #define BSS_ALIGN ALIGN(_region_min_align)
 #else
   /* If building without MMU support, use default 4-byte alignment. */
   _region_min_align = 4;
-#endif
-
-#ifndef BSS_ALIGN
-#define BSS_ALIGN
 #endif
 
 #define MMU_ALIGN    . = ALIGN(_region_min_align)
@@ -230,7 +223,7 @@ SECTIONS
     _app_smem_rom_start = LOADADDR(_APP_SMEM_SECTION_NAME);
 #endif  /* CONFIG_USERSPACE */
 
-    SECTION_DATA_PROLOGUE(_BSS_SECTION_NAME,(NOLOAD), BSS_ALIGN)
+    SECTION_DATA_PROLOGUE(_BSS_SECTION_NAME,(NOLOAD),)
     {
         /*
          * For performance, BSS section is assumed to be 4 byte aligned and

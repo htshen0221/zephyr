@@ -22,7 +22,6 @@ extern void test_k_poll_user_mem_err(void);
 extern void test_k_poll_user_type_sem_err(void);
 extern void test_k_poll_user_type_signal_err(void);
 extern void test_k_poll_user_type_fifo_err(void);
-extern void test_k_poll_user_type_msgq_err(void);
 extern void test_poll_signal_init_null(void);
 extern void test_poll_signal_check_obj(void);
 extern void test_poll_signal_check_signal(void);
@@ -41,7 +40,6 @@ dummy_test(test_k_poll_user_mem_err);
 dummy_test(test_k_poll_user_type_sem_err);
 dummy_test(test_k_poll_user_type_signal_err);
 dummy_test(test_k_poll_user_type_fifo_err);
-dummy_test(test_k_poll_user_type_msgq_err);
 dummy_test(test_poll_signal_init_null);
 dummy_test(test_poll_signal_check_obj);
 dummy_test(test_poll_signal_check_signal);
@@ -81,7 +79,6 @@ void test_main(void)
 			 ztest_user_unit_test(test_k_poll_user_type_sem_err),
 			 ztest_user_unit_test(test_k_poll_user_type_signal_err),
 			 ztest_user_unit_test(test_k_poll_user_type_fifo_err),
-			 ztest_user_unit_test(test_k_poll_user_type_msgq_err),
 			 ztest_user_unit_test(test_poll_signal_init_null),
 			 ztest_user_unit_test(test_poll_signal_check_obj),
 			 ztest_user_unit_test(test_poll_signal_check_signal),

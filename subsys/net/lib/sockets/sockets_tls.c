@@ -1957,7 +1957,6 @@ static int ztls_poll_prepare_ctx(struct tls_context *ctx,
 				 struct k_poll_event *pev_end)
 {
 	const struct fd_op_vtable *vtable;
-	struct k_mutex *lock;
 	void *obj;
 	int ret;
 	short events = pfd->events;
@@ -1981,13 +1980,11 @@ static int ztls_poll_prepare_ctx(struct tls_context *ctx,
 	}
 
 	obj = z_get_fd_obj_and_vtable(
-		ctx->sock, (const struct fd_op_vtable **)&vtable, &lock);
+		ctx->sock, (const struct fd_op_vtable **)&vtable);
 	if (obj == NULL) {
 		ret = -EBADF;
 		goto exit;
 	}
-
-	(void)k_mutex_lock(lock, K_FOREVER);
 
 	ret = z_fdtable_call_ioctl(vtable, obj, ZFD_IOCTL_POLL_PREPARE,
 				   pfd, pev, pev_end);
@@ -2002,9 +1999,6 @@ static int ztls_poll_prepare_ctx(struct tls_context *ctx,
 exit:
 	/* Restore original events. */
 	pfd->events = events;
-
-	k_mutex_unlock(lock);
-
 	return ret;
 }
 
@@ -2062,18 +2056,15 @@ static int ztls_poll_update_ctx(struct tls_context *ctx,
 				struct k_poll_event **pev)
 {
 	const struct fd_op_vtable *vtable;
-	struct k_mutex *lock;
 	void *obj;
 	int ret;
 	short events = pfd->events;
 
 	obj = z_get_fd_obj_and_vtable(
-		ctx->sock, (const struct fd_op_vtable **)&vtable, &lock);
+		ctx->sock, (const struct fd_op_vtable **)&vtable);
 	if (obj == NULL) {
 		return -EBADF;
 	}
-
-	(void)k_mutex_lock(lock, K_FOREVER);
 
 	/* Check if the socket was waiting for the handshake to complete. */
 	if ((pfd->events & ZSOCK_POLLIN) &&
@@ -2086,15 +2077,14 @@ static int ztls_poll_update_ctx(struct tls_context *ctx,
 						   ZFD_IOCTL_POLL_PREPARE,
 						   pfd, pev, *pev + 1);
 			if (ret != 0 && ret != -EALREADY) {
-				goto out;
+				return ret;
 			}
 
 			/* Return -EAGAIN to signal to poll() that it should
 			 * make another iteration with the event reconfigured
 			 * above (if needed).
 			 */
-			ret = -EAGAIN;
-			goto out;
+			return -EAGAIN;
 		}
 
 		/* Handshake still not ready - skip ZSOCK_POLLIN verification
@@ -2120,10 +2110,6 @@ static int ztls_poll_update_ctx(struct tls_context *ctx,
 exit:
 	/* Restore original events. */
 	pfd->events = events;
-
-out:
-	k_mutex_unlock(lock);
-
 	return ret;
 }
 
@@ -2166,8 +2152,7 @@ static inline int ztls_poll_offload(struct zsock_pollfd *fds, int nfds, int time
 
 	/* Get offloaded sockets vtable. */
 	ctx = z_get_fd_obj_and_vtable(fds[0].fd,
-				      (const struct fd_op_vtable **)&vtable,
-				      NULL);
+				      (const struct fd_op_vtable **)&vtable);
 	if (ctx == NULL) {
 		errno = EINVAL;
 		goto exit;
@@ -2381,25 +2366,17 @@ static int tls_sock_ioctl_vmeth(void *obj, unsigned int request, va_list args)
 	case F_GETFL:
 	case F_SETFL: {
 		const struct fd_op_vtable *vtable;
-		struct k_mutex *lock;
 		void *obj;
-		int ret;
 
 		obj = z_get_fd_obj_and_vtable(ctx->sock,
-				(const struct fd_op_vtable **)&vtable, &lock);
+					(const struct fd_op_vtable **)&vtable);
 		if (obj == NULL) {
 			errno = EBADF;
 			return -1;
 		}
 
-		(void)k_mutex_lock(lock, K_FOREVER);
-
 		/* Pass the call to the core socket implementation. */
-		ret = vtable->ioctl(obj, request, args);
-
-		k_mutex_unlock(lock);
-
-		return ret;
+		return vtable->ioctl(obj, request, args);
 	}
 
 	case ZFD_IOCTL_POLL_PREPARE: {

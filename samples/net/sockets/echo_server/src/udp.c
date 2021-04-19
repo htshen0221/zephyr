@@ -156,7 +156,8 @@ static void process_udp4(void)
 		return;
 	}
 
-	k_work_reschedule(&conf.ipv4.udp.stats_print, K_SECONDS(STATS_TIMER));
+	k_delayed_work_submit(&conf.ipv4.udp.stats_print,
+			      K_SECONDS(STATS_TIMER));
 
 	while (ret == 0) {
 		ret = process_udp(&conf.ipv4);
@@ -182,7 +183,8 @@ static void process_udp6(void)
 		return;
 	}
 
-	k_work_reschedule(&conf.ipv6.udp.stats_print, K_SECONDS(STATS_TIMER));
+	k_delayed_work_submit(&conf.ipv6.udp.stats_print,
+			      K_SECONDS(STATS_TIMER));
 
 	while (ret == 0) {
 		ret = process_udp(&conf.ipv6);
@@ -209,7 +211,7 @@ static void print_stats(struct k_work *work)
 		atomic_set(&data->udp.bytes_received, 0);
 	}
 
-	k_work_reschedule(&data->udp.stats_print, K_SECONDS(STATS_TIMER));
+	k_delayed_work_submit(&data->udp.stats_print, K_SECONDS(STATS_TIMER));
 }
 
 void start_udp(void)
@@ -219,7 +221,7 @@ void start_udp(void)
 		k_mem_domain_add_thread(&app_domain, udp6_thread_id);
 #endif
 
-		k_work_init_delayable(&conf.ipv6.udp.stats_print, print_stats);
+		k_delayed_work_init(&conf.ipv6.udp.stats_print, print_stats);
 		k_thread_name_set(udp6_thread_id, "udp6");
 		k_thread_start(udp6_thread_id);
 	}
@@ -229,7 +231,7 @@ void start_udp(void)
 		k_mem_domain_add_thread(&app_domain, udp4_thread_id);
 #endif
 
-		k_work_init_delayable(&conf.ipv4.udp.stats_print, print_stats);
+		k_delayed_work_init(&conf.ipv4.udp.stats_print, print_stats);
 		k_thread_name_set(udp4_thread_id, "udp4");
 		k_thread_start(udp4_thread_id);
 	}

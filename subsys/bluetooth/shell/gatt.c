@@ -174,8 +174,8 @@ static int cmd_discover(const struct shell *shell, size_t argc, char *argv[])
 	}
 
 	discover_params.func = discover_func;
-	discover_params.start_handle = BT_ATT_FIRST_ATTTRIBUTE_HANDLE;
-	discover_params.end_handle = BT_ATT_LAST_ATTTRIBUTE_HANDLE;
+	discover_params.start_handle = 0x0001;
+	discover_params.end_handle = 0xffff;
 
 	if (argc > 1) {
 		/* Only set the UUID if the value is valid (non zero) */
@@ -320,8 +320,8 @@ static int cmd_read_uuid(const struct shell *shell, size_t argc, char *argv[])
 
 	read_params.func = read_func;
 	read_params.handle_count = 0;
-	read_params.by_uuid.start_handle = BT_ATT_FIRST_ATTTRIBUTE_HANDLE;
-	read_params.by_uuid.end_handle = BT_ATT_LAST_ATTTRIBUTE_HANDLE;
+	read_params.by_uuid.start_handle = 0x0001;
+	read_params.by_uuid.end_handle = 0xffff;
 
 	if (argc > 1) {
 		uuid.val = strtoul(argv[1], NULL, 16);
@@ -945,22 +945,393 @@ static ssize_t read_met(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				 value_len);
 }
 
+//*** start of advertiser part ***/
+#define P_ADV_INT 0x0800
+#define PER_PARAM BT_LE_PER_ADV_PARAM(P_ADV_INT, \
+						  P_ADV_INT, \
+						  BT_LE_PER_ADV_OPT_NONE)
+#define EXT_ADV_START_PARAM BT_LE_EXT_ADV_START_PARAM(0, 0)
+//(timeout, num_events) 0=forever (scanner can find it anytime)
+
+int order, num_advtisers, adv_int, adv_t;
+
+static uint8_t mfg_data[] = { 0xff, 0xff, 0x00 };
+
+static const struct bt_data ad[] = {
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg_data, 3),
+};
+
+void periodic_adv()
+{
+	struct bt_le_ext_adv *adv;
+	int err;
+	
+	mfg_data[0] = order;
+	
+	printk("Starting Periodic Advertising\n");
+	
+	//TODO: wait
+	
+	/* Create a non-connectable non-scannable advertising set */
+	err = bt_le_ext_adv_create(BT_LE_EXT_ADV_NCONN_NAME, NULL, &adv);
+	if (err) {
+		printk("Failed to create advertising set (err %d)\n", err);
+		return;
+	}
+
+	/* Set periodic advertising parameters */
+	err = bt_le_per_adv_set_param(adv, PER_PARAM);
+	if (err) {
+		printk("Failed to set periodic advertising parameters"
+		       " (err %d)\n", err);
+		return;
+	}
+
+	/* Enable Periodic Advertising */
+	err = bt_le_per_adv_start(adv);
+	if (err) {
+		printk("Failed to enable periodic advertising (err %d)\n", err);
+		return;
+	}
+
+	/* Start extended advertising */
+	err = bt_le_ext_adv_start(adv, EXT_ADV_START_PARAM);
+	if (err) {
+		printk("Failed to start extended advertising (err %d)\n", err);
+		return;
+	}
+	
+	//TODO: advertising for certain time
+	//TODO: stop advertising after certain time
+	
+	while (true) {
+		k_sleep(K_SECONDS(1));
+
+		mfg_data[2]++;
+
+		printk("Set Periodic Advertising Data...");
+		err = bt_le_per_adv_set_data(adv, ad, ARRAY_SIZE(ad));
+		if (err) {
+			printk("Failed (err %d)\n", err);
+			return;
+		}
+		printk("done.\n");
+	}
+}
+
 static ssize_t write_met(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			 const void *buf, uint16_t len, uint16_t offset,
 			 uint8_t flags)
 {
 	uint8_t *value = attr->user_data;
-
+	
 	if (offset + len > sizeof(met_char_value)) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
 
 	memcpy(value + offset, buf, len);
-
+	
 	update_write_stats(len);
+	
+	uint8_t data[256];
+	attr->read(NULL, attr, (void *)data, sizeof(data), 0);
+	
+	order = data[0];
+	num_advtisers = data[1];
+	adv_int = data[2];
+	adv_t = data[3];
+	
+	printk("\nMy periodic advertising order: %d,\n", order);
+	printk("Periodic advertising interval: %d units,\n", adv_int);
+	printk("Advertising time: %d ms,\n", adv_t);
+	printk("Num of advertisers: %d\n\n", num_advtisers);
+	printk("Ready to start periodic advertising after disconnected.\n\n");
+	
+	int err = bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	if (err) {
+		printk("bt_conn_disconnect ERR: %d", err);
+	}
+	
+	err = bt_le_adv_stop();
+	if (err) {
+		printk("bt_le_adv_stop ERR: %d", err);
+	}
+	
+	periodic_adv();
 
 	return len;
 }
+//*** end of advertiser part ***/
+
+//*** start of scanner part ***/
+#define TIMEOUT_SYNC_CREATE K_SECONDS(10)
+#define NAME_LEN            30
+
+static bool         per_adv_found;
+static bt_addr_le_t per_addr;
+static uint8_t      per_sid;
+
+static K_SEM_DEFINE(sem_per_adv, 0, 1);
+static K_SEM_DEFINE(sem_per_sync, 0, 1);
+static K_SEM_DEFINE(sem_per_sync_lost, 0, 1);
+
+static bool data_cb(struct bt_data *data, void *user_data)
+{
+	char *name = user_data;
+	uint8_t len;
+
+	switch (data->type) {
+	case BT_DATA_NAME_SHORTENED:
+	case BT_DATA_NAME_COMPLETE:
+		len = MIN(data->data_len, NAME_LEN - 1);
+		memcpy(name, data->data, len);
+		name[len] = '\0';
+		return false;
+	default:
+		return true;
+	}
+}
+
+static const char *phy2str(uint8_t phy)
+{
+	switch (phy) {
+	case 0: return "No packets";
+	case BT_GAP_LE_PHY_1M: return "LE 1M";
+	case BT_GAP_LE_PHY_2M: return "LE 2M";
+	case BT_GAP_LE_PHY_CODED: return "LE Coded";
+	default: return "Unknown";
+	}
+}
+
+static void scan_recv(const struct bt_le_scan_recv_info *info,
+		      struct net_buf_simple *buf)
+{
+	char le_addr[BT_ADDR_LE_STR_LEN];
+	char name[NAME_LEN];
+
+	(void)memset(name, 0, sizeof(name));
+
+	bt_data_parse(buf, data_cb, name);
+
+	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+	
+	printk("[DEVICE]: %s, AD evt type %u, Tx Pwr: %i, RSSI %i %s "
+	       "C:%u S:%u D:%u SR:%u E:%u Prim: %s, Secn: %s, "
+	       "Interval: 0x%04x (%u ms), SID: %u\n",
+	       le_addr, info->adv_type, info->tx_power, info->rssi, name,
+	       (info->adv_props & BT_GAP_ADV_PROP_CONNECTABLE) != 0,
+	       (info->adv_props & BT_GAP_ADV_PROP_SCANNABLE) != 0,
+	       (info->adv_props & BT_GAP_ADV_PROP_DIRECTED) != 0,
+	       (info->adv_props & BT_GAP_ADV_PROP_SCAN_RESPONSE) != 0,
+	       (info->adv_props & BT_GAP_ADV_PROP_EXT_ADV) != 0,
+	       phy2str(info->primary_phy), phy2str(info->secondary_phy),
+	       info->interval, info->interval * 5 / 4, info->sid);
+		   
+	if (!per_adv_found && info->interval) {
+		per_adv_found = true;
+
+		per_sid = info->sid;
+		bt_addr_le_copy(&per_addr, info->addr);
+
+		k_sem_give(&sem_per_adv);
+	}
+}
+
+static struct bt_le_scan_cb scan_callbacks = {
+	.recv = scan_recv,
+};
+
+static void sync_cb(struct bt_le_per_adv_sync *sync,
+		    struct bt_le_per_adv_sync_synced_info *info)
+{
+	char le_addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+
+	printk("PER_ADV_SYNC[%u]: [DEVICE]: %s synced, "
+	       "Interval 0x%04x (%u ms), PHY %s\n",
+	       bt_le_per_adv_sync_get_index(sync), le_addr,
+	       info->interval, info->interval * 5 / 4, phy2str(info->phy));
+
+	k_sem_give(&sem_per_sync);
+}
+
+static void term_cb(struct bt_le_per_adv_sync *sync,
+		    const struct bt_le_per_adv_sync_term_info *info)
+{
+	char le_addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+
+	printk("PER_ADV_SYNC[%u]: [DEVICE]: %s sync terminated\n",
+	       bt_le_per_adv_sync_get_index(sync), le_addr);
+
+	k_sem_give(&sem_per_sync_lost);
+}
+
+static void recv_cb(struct bt_le_per_adv_sync *sync,
+		    const struct bt_le_per_adv_sync_recv_info *info,
+		    struct net_buf_simple *buf)
+{
+	char le_addr[BT_ADDR_LE_STR_LEN];
+	char data_str[129];
+
+	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+	bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
+
+	printk("PER_ADV_SYNC[%u]: [DEVICE]: %s, tx_power %i, "
+	       "RSSI %i, CTE %u, data length %u, data: %s\n",
+	       bt_le_per_adv_sync_get_index(sync), le_addr, info->tx_power,
+	       info->rssi, info->cte_type, buf->len, data_str);
+}
+
+static struct bt_le_per_adv_sync_cb sync_callbacks = {
+	.synced = sync_cb,
+	.term = term_cb,
+	.recv = recv_cb
+};
+
+void periodic_adv_sync()
+{
+	struct bt_le_per_adv_sync_param sync_create_param;
+	struct bt_le_per_adv_sync *sync;
+	int err;
+
+	printk("Starting Periodic Advertising Synchronization\n");
+
+	printk("Scan callbacks register...");
+	bt_le_scan_cb_register(&scan_callbacks);
+	printk("success.\n");
+
+	printk("Periodic Advertising callbacks register...");
+	bt_le_per_adv_sync_cb_register(&sync_callbacks);
+	printk("Success.\n");
+
+	printk("Start scanning...");
+	err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, NULL);
+	if (err) {
+		printk("failed (err %d)\n", err);
+		return;
+	}
+	printk("success.\n");
+
+	do {
+		printk("Waiting for periodic advertising...\n");
+		per_adv_found = false;
+		err = k_sem_take(&sem_per_adv, K_FOREVER);
+		if (err) {
+			printk("failed (err %d)\n", err);
+			return;
+		}
+		printk("Found periodic advertising.\n");
+
+		printk("Creating Periodic Advertising Sync...");
+		bt_addr_le_copy(&sync_create_param.addr, &per_addr);
+		sync_create_param.options = 0;
+		sync_create_param.sid = per_sid;
+		sync_create_param.skip = 0;
+		sync_create_param.timeout = 0xa;
+		err = bt_le_per_adv_sync_create(&sync_create_param, &sync);
+		if (err) {
+			printk("failed (err %d)\n", err);
+			return;
+		}
+		printk("success.\n");
+
+		printk("Waiting for periodic sync...\n");
+		err = k_sem_take(&sem_per_sync, TIMEOUT_SYNC_CREATE);
+		if (err) {
+			printk("failed (err %d)\n", err);
+
+			printk("Deleting Periodic Advertising Sync...");
+			err = bt_le_per_adv_sync_delete(sync);
+			if (err) {
+				printk("failed (err %d)\n", err);
+				return;
+			}
+			continue;
+		}
+		printk("Periodic sync established.\n");
+
+		printk("Waiting for periodic sync lost...\n");
+		err = k_sem_take(&sem_per_sync_lost, K_FOREVER);
+		if (err) {
+			printk("failed (err %d)\n", err);
+			return;
+		}
+		printk("Periodic sync lost.\n");
+	} while (true);
+}
+
+static int cmd_periodic_adv_sync_start(const struct shell *shell, size_t argc, char *argv[])
+{
+	periodic_adv_sync();
+	return 0;
+}
+
+//<num_advtisers> <adv_int> <adv_t>", cmd_periodic_adv_setup
+static int cmd_periodic_adv_setup(const struct shell *shell,
+				 size_t argc, char *argv[])
+{
+	uint16_t handle = 0x1e;
+	int err;
+	uint16_t len;
+	bool sign;
+	bt_gatt_complete_func_t func = NULL;
+
+	if (!default_conn) {
+		shell_error(shell, "Not connected");
+		return -ENOEXEC;
+	}
+
+	sign = !strcmp(argv[0], "signed-write");
+	if (!sign) {
+		if (!strcmp(argv[0], "write-without-response-cb")) {
+			func = write_without_rsp_cb;
+			reset_write_stats();
+		}
+	}
+	
+	//TODO: update CI 7.5
+
+	num_advtisers = strtoul(argv[1], NULL, 16);
+	adv_int = strtoul(argv[2], NULL, 16);
+	adv_t = strtoul(argv[3], NULL, 16);
+	
+	gatt_write_buf[1] = num_advtisers;
+	gatt_write_buf[2] = adv_int;
+	gatt_write_buf[3] = adv_t;
+	
+	len = 4;
+	
+	for(int i = 0; i < CONFIG_BT_MAX_CONN; i++)
+	{
+		order = i;
+		gatt_write_buf[0] = order + 1;
+		err = bt_gatt_write_without_response_cb(index_get_conn(i), handle,
+								gatt_write_buf, len,
+								sign, func,
+								UINT_TO_POINTER(len));
+		if (err) {
+			printk("gatt_write_without_response ERR: %d", err);
+		}
+		printk("Conn: %d\n", bt_conn_index(index_get_conn(i)));
+	}
+
+	shell_print(shell, "Write Complete (err %d)", err);
+	printk("\nPeriodic advertising interval: %d units,\n", adv_int);
+	printk("Advertising time: %d ms,\n ", adv_t);
+	printk("Num of advertisers: %d\n", num_advtisers);
+	printk("\nReady to diconnect from %d advertisers\n", num_advtisers);
+	
+	// start periodic advertising sync
+	
+	periodic_adv_sync();
+	
+	return err;
+}
+//*** end of scanner part ***/
+
 
 static struct bt_gatt_attr met_attrs[] = {
 	BT_GATT_PRIMARY_SERVICE(&met_svc_uuid),
@@ -1135,6 +1506,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(gatt_cmds,
 	SHELL_CMD_ARG(discover-secondary, NULL,
 		      "[UUID] [start handle] [end handle]", cmd_discover, 1, 3),
 	SHELL_CMD_ARG(exchange-mtu, NULL, HELP_NONE, cmd_exchange_mtu, 1, 0),
+	SHELL_CMD_ARG(per-adv-start, NULL, HELP_NONE, cmd_periodic_adv_sync_start, 1, 0),
 	SHELL_CMD_ARG(read, NULL, "<handle> [offset]", cmd_read, 2, 1),
 	SHELL_CMD_ARG(read-uuid, NULL, "<UUID> [start handle] [end handle]",
 		      cmd_read_uuid, 2, 2),
@@ -1147,6 +1519,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(gatt_cmds,
 	SHELL_CMD_ARG(resubscribe, NULL, HELP_ADDR_LE" <CCC handle> "
 		      "<value handle> [ind]", cmd_resubscribe, 5, 1),
 	SHELL_CMD_ARG(write, NULL, "<handle> <offset> <data>", cmd_write, 4, 0),
+	SHELL_CMD_ARG(periodic-adv-setup, NULL, 
+		"<num_advtisers> <adv_int> <adv_t>", cmd_periodic_adv_setup, 4, 0),
 	SHELL_CMD_ARG(write-without-response, NULL,
 		      "<handle> <data> [length] [repeat]",
 		      cmd_write_without_rsp, 3, 2),

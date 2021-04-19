@@ -14,8 +14,9 @@
 #include <drivers/spi.h>
 #include <logging/log_ctrl.h>
 #include <logging/log.h>
-/* OOB operations will be attempted regardless of channel enabled or not */
+#ifdef CONFIG_ESPI_OOB_CHANNEL
 #include "espi_oob_handler.h"
+#endif
 LOG_MODULE_DECLARE(espi, CONFIG_ESPI_LOG_LEVEL);
 
 /* eSPI flash parameters */

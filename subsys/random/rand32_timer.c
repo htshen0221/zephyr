@@ -62,16 +62,20 @@ uint32_t z_impl_sys_rand32_get(void)
 
 void z_impl_sys_rand_get(void *dst, size_t outlen)
 {
-	uint8_t *udst = dst;
-	uint32_t blocksize;
+	uint32_t len = 0;
+	uint32_t blocksize = 4;
 	uint32_t ret;
+	uint32_t *udst = (uint32_t *)dst;
 
-	while (outlen) {
+	while (len < outlen) {
 		ret = sys_rand32_get();
-		blocksize = MIN(outlen, sizeof(ret));
-		(void)memcpy((void *)udst, &ret, blocksize);
-		udst += blocksize;
-		outlen -= blocksize;
+		if ((outlen-len) < sizeof(ret)) {
+			blocksize = len;
+			(void)memcpy(udst, &ret, blocksize);
+		} else {
+			(*udst++) = ret;
+		}
+		len += blocksize;
 	}
 }
 #endif /* __GNUC__ */

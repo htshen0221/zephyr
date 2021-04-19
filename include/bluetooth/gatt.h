@@ -622,12 +622,10 @@ ssize_t bt_gatt_attr_read_chrc(struct bt_conn *conn,
 						   })),                      \
 	BT_GATT_ATTRIBUTE(_uuid, _perm, _read, _write, _value)
 
-#if defined(CONFIG_BT_SETTINGS_CCC_LAZY_LOADING)
+#if IS_ENABLED(CONFIG_BT_SETTINGS_CCC_LAZY_LOADING)
 	#define BT_GATT_CCC_MAX (CONFIG_BT_MAX_CONN)
-#elif defined(CONFIG_BT_CONN)
-	#define BT_GATT_CCC_MAX (CONFIG_BT_MAX_PAIRED + CONFIG_BT_MAX_CONN)
 #else
-	#define BT_GATT_CCC_MAX 0
+	#define BT_GATT_CCC_MAX (CONFIG_BT_MAX_PAIRED + CONFIG_BT_MAX_CONN)
 #endif
 
 /** @brief GATT CCC configuration entry. */
