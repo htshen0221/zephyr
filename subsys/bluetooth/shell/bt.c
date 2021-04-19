@@ -87,6 +87,7 @@ static const char *phy2str(uint8_t phy)
 }
 #endif
 
+#if defined(CONFIG_BT_PER_ADV_SYNC)
 #if defined(CONFIG_BT_OBSERVER)
 static bool data_cb(struct bt_data *data, void *user_data)
 {
@@ -102,18 +103,56 @@ static bool data_cb(struct bt_data *data, void *user_data)
 	}
 }
 
+static void start_scan(void);
+int connected_devices;
+char found_name[NAME_LEN];
+
+static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
+			 struct net_buf_simple *ad)
+{
+	char addr_str[BT_ADDR_LE_STR_LEN];
+
+	if (default_conn) {
+		return;
+	}
+
+	/* We're only interested in connectable events */
+	if (type != BT_GAP_ADV_TYPE_ADV_IND &&
+	    type != BT_GAP_ADV_TYPE_ADV_DIRECT_IND) {
+		return;
+	}
+	
+	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
+	printk("Device found: %s (RSSI %d) %s\n", addr_str, rssi, found_name);
+}
+
+static void start_scan(void)
+{
+	int err;
+
+	err = bt_le_scan_start(BT_LE_SCAN_ACTIVE, device_found);
+	if (err) {
+		printk("Scanning failed to start (err %d)\n", err);
+		return;
+	}
+
+	printk("Scanning successfully started\n");
+}
 
 static void scan_recv(const struct bt_le_scan_recv_info *info,
 		      struct net_buf_simple *buf)
 {
 	char le_addr[BT_ADDR_LE_STR_LEN];
-	char name[NAME_LEN];
 
-	(void)memset(name, 0, sizeof(name));
+	int err;
+	struct bt_conn *conn;
 
-	bt_data_parse(buf, data_cb, name);
+	(void)memset(found_name, 0, sizeof(found_name));
+
+	bt_data_parse(buf, data_cb, found_name);
 
 	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+	/*
 	shell_print(ctx_shell, "[DEVICE]: %s, AD evt type %u, RSSI %i %s "
 		    "C:%u S:%u D:%d SR:%u E:%u Prim: %s, Secn: %s, "
 		    "Interval: 0x%04x (%u ms), SID: 0x%x",
@@ -126,6 +165,38 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 		    phy2str(info->primary_phy), phy2str(info->secondary_phy),
 		    info->interval, BT_INTERVAL_TO_MS(info->interval),
 		    info->sid);
+	*/
+	
+	if(!strcmp(found_name, "sensor_test"))
+	{
+		bt_le_scan_stop();
+		
+		uint32_t options = 0;
+
+		struct bt_conn_le_create_param *create_params =
+			BT_CONN_LE_CREATE_PARAM(options,
+						BT_GAP_SCAN_FAST_INTERVAL,
+						BT_GAP_SCAN_FAST_INTERVAL);
+
+		err = bt_conn_le_create(info->addr, create_params, BT_LE_CONN_PARAM_DEFAULT,
+					&conn);
+		if (err) {
+			printk("Create conn to %s failed (%u)\n", le_addr, err);
+		} else {
+			printk("Connection pending\n");
+
+			/* unref connection obj in advance as app user */
+	
+			bt_conn_unref(conn);
+		}
+		
+		if(connected_devices < CONFIG_BT_MAX_CONN)
+		{
+			k_sleep(K_MSEC(100));
+			start_scan();
+		}
+	}
+	
 }
 
 static void scan_timeout(void)
@@ -133,6 +204,7 @@ static void scan_timeout(void)
 	shell_print(ctx_shell, "Scan timeout");
 }
 #endif /* CONFIG_BT_OBSERVER */
+#endif /* CONFIG_BT_PER_ADV_SYNC*/
 
 #if defined(CONFIG_BT_EXT_ADV)
 #if defined(CONFIG_BT_BROADCASTER)
@@ -253,6 +325,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 
 	shell_print(ctx_shell, "Connected: %s", addr);
+	connected_devices++;
 
 	if (!default_conn) {
 		default_conn = bt_conn_ref(conn);
@@ -277,6 +350,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		bt_conn_unref(default_conn);
 		default_conn = NULL;
 	}
+	
+	connected_devices--;
 }
 
 static bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
@@ -441,12 +516,14 @@ static struct bt_conn_cb conn_callbacks = {
 };
 #endif /* CONFIG_BT_CONN */
 
+#if defined(CONFIG_BT_PER_ADV_SYNC)
 #if defined(CONFIG_BT_OBSERVER)
 static struct bt_le_scan_cb scan_callbacks = {
 	.recv = scan_recv,
 	.timeout = scan_timeout,
 };
 #endif /* defined(CONFIG_BT_OBSERVER) */
+#endif /* defined(CONFIG_BT_PER_ADV_SYNC)*/
 
 #if defined(CONFIG_BT_EXT_ADV)
 #if defined(CONFIG_BT_BROADCASTER)
@@ -945,7 +1022,7 @@ static int cmd_scan(const struct shell *shell, size_t argc, char *argv[])
 
 #if defined(CONFIG_BT_BROADCASTER)
 static const struct bt_data ad_discov[] = {
-	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR))
 };
 
 static int cmd_advertise(const struct shell *shell, size_t argc, char *argv[])
@@ -1811,6 +1888,66 @@ static int cmd_per_adv_sync_transfer(const struct shell *shell, size_t argc,
 	err = bt_le_per_adv_sync_transfer(per_adv_sync, default_conn, 0);
 	if (err) {
 		shell_error(shell, "Periodic advertising sync transfer failed (%d)", err);
+	}
+
+	return err;
+}
+
+static int cmd_quick_start(const struct shell *shell, size_t argc,
+				     char *argv[])
+{
+	int err;
+	int role;
+	
+	role = strtol(argv[1], NULL, 10);
+	
+	
+	//this is: bt init
+	ctx_shell = shell;
+	err = bt_enable(bt_ready);
+	if (err) {
+		shell_error(shell, "Bluetooth init failed (err %d)",
+				err);
+	}
+	printk("Bluetooth init successfully\n");
+	connected_devices = 0;
+
+	if(role) //advertiser
+	{ // this is: rename "sensor_test" & bt advertise on
+		char name[] = "sensor_test";
+		err = bt_set_name(name);
+		if (err) {
+			shell_error(shell, "Unable to set name %s (err %d)", argv[1],
+					err);
+			return err;
+		}
+		
+		struct bt_le_adv_param param = {};
+		const struct bt_data *ad;
+		size_t ad_len;
+		
+		param.id = selected_id;
+		param.interval_min = BT_GAP_ADV_FAST_INT_MIN_2;
+		param.interval_max = BT_GAP_ADV_FAST_INT_MAX_2;
+
+		param.options = (BT_LE_ADV_OPT_CONNECTABLE |
+					 BT_LE_ADV_OPT_USE_NAME);
+
+		ad = ad_discov;
+		ad_len = ARRAY_SIZE(ad_discov);
+
+		err = bt_le_adv_start(&param, ad, ad_len, NULL, 0);
+		if (err < 0) {
+			shell_error(shell, "Failed to start advertising (err %d)",
+					err);
+			return err;
+		} else {
+			shell_print(shell, "Advertising started");
+		}
+	}
+	else //scanner
+	{ // do: scan then connect "sensor_test"
+		start_scan();
 	}
 
 	return err;
@@ -3092,6 +3229,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(bt_cmds,
 		      cmd_past_unsubscribe, 1, 1),
 	SHELL_CMD_ARG(per-adv-sync-transfer, NULL, "[<index>]",
 		      cmd_per_adv_sync_transfer, 1, 1),
+	SHELL_CMD_ARG(quick-start, NULL, "[role: scanner, advertiser <0, 1>]", cmd_quick_start, 2, 0),
 #endif /* defined(CONFIG_BT_PER_ADV_SYNC) */
 #if defined(CONFIG_BT_CENTRAL)
 	SHELL_CMD_ARG(connect, NULL, HELP_ADDR_LE EXT_ADV_SCAN_OPT,
